@@ -119,9 +119,7 @@ def get_defocussed_stars(img, debug_imgs=False):
     uint8_img = (binary_img * 1).astype(np.uint8)
 
     im2, contours, hierarchy = cv.findContours(uint8_img, cv.RETR_TREE, cv.CHAIN_APPROX_TC89_L1)
-    if debug_imgs:
-        plt.imshow(binary_img)
-        plt.show()
+
 
     tree = cvhier2tree(hierarchy,contours)
 
@@ -147,13 +145,13 @@ def get_defocussed_stars(img, debug_imgs=False):
 
     if debug_imgs:
         contour_img = np.zeros((uint8_img.shape[0], uint8_img.shape[1], 1))
-        contour_img = cv.normalize(img, contour_img, 0, 255, cv.NORM_MINMAX)
-        display_img = np.ascontiguousarray(np.moveaxis(np.array([contour_img, contour_img, contour_img]), 0, 2))
+        contour_img = cv.normalize(img, contour_img, 0, 1, cv.NORM_MINMAX)
+        display_img = np.stack((contour_img,)*3, axis=-1)
 
 
         for node in LevelOrderIter(tree):
             if node is not tree and hasattr(node,'elip'):
-                cv.ellipse(display_img, node.elip, (255,0,0), 2)
+                cv.ellipse(display_img, node.elip, (1,0,0), 2)
 
         fig, ax = plt.subplots(1, 1)
         fig.suptitle('Detected stars')
@@ -180,7 +178,7 @@ def analyse_off_axis(img, debug_imgs=False):
 
     mat_corrected = mat_blurred - fitted_surf
 
-    stars_tree = get_defocussed_stars(mat_corrected, debug_imgs=debug_imgs)
+    stars_tree = get_defocussed_stars(img, debug_imgs=debug_imgs)
 
     if debug_imgs:
         fig, ax = plt.subplots(2, 2)
@@ -223,9 +221,8 @@ def analyse_on_axis(img, debug_imgs=False):
 
     if debug_imgs:
         contour_img = np.zeros((img.shape[0], img.shape[1], 1))
-        contour_img = cv.normalize(img, contour_img, 0, 255, cv.NORM_MINMAX)
-        display_img = np.ascontiguousarray(
-            np.moveaxis(np.array([contour_img, contour_img, contour_img]), 0, 2))
+        contour_img = cv.normalize(img, contour_img, 0, 1, cv.NORM_MINMAX)
+        display_img = np.stack((contour_img,)*3, axis=-1)
 
         fig, ax = plt.subplots(1, 1)
         fig.suptitle('Centre Star')
@@ -233,13 +230,13 @@ def analyse_on_axis(img, debug_imgs=False):
         plt.show()
         for node in LevelOrderIter(centre_star):
             if hasattr(node, 'elip'):
-                cv.ellipse(display_img, node.elip, (0, 0, 255), 2)
+                cv.ellipse(display_img, node.elip, (0, 0, 1), 2)
 
         cv.line(display_img, int_tup(centre_coords), int_tup(centre_star.elip[0]),
-                color=(0, 255, 0), thickness=2)
+                color=(0, 1, 0), thickness=2)
 
         cv.line(display_img, int_tup(centre_star.elip[0]), int_tup(centre_obstruction.elip[0]),
-                color=(255, 0, 0), thickness=2)
+                color=(1, 0, 0), thickness=2)
         fig, ax = plt.subplots(1, 1)
         fig.suptitle('Centre star')
         ax.imshow(display_img)
@@ -247,16 +244,27 @@ def analyse_on_axis(img, debug_imgs=False):
 
 
 def main():
-    on_axis_fits = fits.open('data/eigen/_L_SNAPSHOT_2020-03-05_21-19-14_0000_8.00s_-15.00_0.00.fits')
-    on_axis = on_axis_fits[0].data
-
-    dsi = fits.open("data/example_balanced.fit")
-    img = dsi[0].data
-
-    analyse_on_axis(img, debug_imgs=True)
 
 
-    analyse_off_axis(img, debug_imgs=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("fits_path", required=True)
+    parser.add_argument('on_axis', action='store_true')
+    parser.add_argument('off_axis', action='store_true')
+    parser.add_argument('debug', action='store_true')
+
+
+    args = parser.parse_args()
+
+
+
+    fits_file = fits.open('data/eigen/_L_SNAPSHOT_2020-03-05_21-19-14_0000_8.00s_-15.00_0.00.fits')
+    img = fits_file[0].data
+
+    if args.on_axis:
+        analyse_on_axis(img.copy(), debug_imgs=args.debug)
+
+    if args.off_axis:
+        analyse_off_axis(img.copy(), debug_imgs=args.debug)
 
 
 
