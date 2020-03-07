@@ -106,10 +106,10 @@ def cvhier2tree(hierarchy, contours):
 
 
     print(H)
-    #print(cnt_nodes)
-    #print(RenderTree(root))
     return root
 
+def int_tup (in_tup):
+    return (int(in_tup[0]), int(in_tup[1]))
 
 def get_defocussed_stars(img, debug_imgs=False):
     binary_img = img > np.std(img) + np.median(img)
@@ -125,42 +125,44 @@ def get_defocussed_stars(img, debug_imgs=False):
 
     tree = cvhier2tree(hierarchy,contours)
 
-
-    for node in LevelOrderIter(tree, maxlevel=2):
+    #we only care about nodes we can fit an ellipse to so, so remove the ones we can't
+    for node in LevelOrderIter(tree):
         if node is not tree:
             if node.cnt.shape[0] < 5:
                 node.parent = None
+            else:
+                node.elip = cv.fitEllipse(node.cnt)
 
 
     #first we will remove all top level nodes that do not fit an ellipse well in terms of area
     for node in LevelOrderIter(tree, maxlevel=2):
         if node is not tree:
-            elip = cv.fitEllipse(node.cnt)
-            A = np.pi * elip[1][0]/2 * elip[1][1]/2 # Area = pi * semi major axis * semi minor axis
+
+            A = np.pi * node.elip[1][0]/2 * node.elip[1][1]/2 # Area = pi * semi major axis * semi minor axis
             cA = cv.contourArea(node.cnt)
             print("Ellipse area = "+str(A) + " Contour Area = " + str(cA))
-            if  0.9*A < cA and cA < 1.1*cA:
-                node.elip = elip
-            else:
-                print("removing node centred at " + str(elip[0]))
-
-
+            if  0.9*A > cA or cA > 1.1*cA:
+                node.parent = None
+                print("removing node centred at " + str(node.elip[0]))
 
     if debug_imgs:
-        contour_img = np.zeros((uint8_img.shape[0], uint8_img.shape[1], 3))
-        contour_img = cv.normalize(img, cv.NORM_MINMAX, 0, 255)
-        fig, ax = plt.subplots(1, 1)
-        fig.suptitle('Star blob detection')
-        ax.imshow(contour_img)
-        plt.show()
+        contour_img = np.zeros((uint8_img.shape[0], uint8_img.shape[1], 1))
+        contour_img = cv.normalize(img, contour_img, 0, 255, cv.NORM_MINMAX)
+        display_img = np.ascontiguousarray(np.moveaxis(np.array([contour_img, contour_img, contour_img]), 0, 2))
+
+
         for node in LevelOrderIter(tree):
             if node is not tree and hasattr(node,'elip'):
-                cv.ellipse(contour_img, node.elip, (255), 2)
+                cv.ellipse(display_img, node.elip, (255,0,0), 2)
 
         fig, ax = plt.subplots(1, 1)
-        fig.suptitle('Star blob detection')
-        ax.imshow(contour_img)
+        fig.suptitle('Detected stars')
+        ax.imshow(display_img)
         plt.show()
+
+    return tree
+
+
 
 
 def analyse_off_axis(img, debug_imgs=False):
@@ -192,17 +194,69 @@ def analyse_off_axis(img, debug_imgs=False):
 
 
 def analyse_on_axis(img, debug_imgs=False):
-    get_defocussed_stars(img, debug_imgs=debug_imgs)
+    tree = get_defocussed_stars(img, debug_imgs=debug_imgs)
 
+    # now find ellipse with its centre closest to the centre of the image
+    centre_star = None
+    centre_coords = (img.shape[0] / 2, img.shape[1] / 2)
+    current_shortest_dist = float("inf")
+    for node in LevelOrderIter(tree, maxlevel=2):
+        if node is not tree and hasattr(node, 'elip'):
+            dist = cv.norm(centre_coords, node.elip[0], cv.NORM_L2)
+            print("Smallest dist so far = " + str(
+                current_shortest_dist) + " current ellipse centre dist = " + str(dist))
+            if dist < current_shortest_dist:
+                centre_star = node
+                current_shortest_dist = dist
+
+    # if not refractor :P (find centre hole from central obstruction))
+    centre_obstruction = None
+    current_biggest_area = float("-inf")
+    for node in LevelOrderIter(centre_star, maxlevel=2):
+        if node is not centre_star and hasattr(node, 'elip'):
+            A = np.pi * node.elip[1][0] / 2 * node.elip[1][1] / 2
+            print("Biggest are so far = " + str(
+                current_shortest_dist) + " current ellipse area = " + str(A))
+            if A > current_biggest_area:
+                centre_obstruction = node
+                current_shortest_dist = A
+
+    if debug_imgs:
+        contour_img = np.zeros((img.shape[0], img.shape[1], 1))
+        contour_img = cv.normalize(img, contour_img, 0, 255, cv.NORM_MINMAX)
+        display_img = np.ascontiguousarray(
+            np.moveaxis(np.array([contour_img, contour_img, contour_img]), 0, 2))
+
+        fig, ax = plt.subplots(1, 1)
+        fig.suptitle('Centre Star')
+        ax.imshow(contour_img)
+        plt.show()
+        for node in LevelOrderIter(centre_star):
+            if hasattr(node, 'elip'):
+                cv.ellipse(display_img, node.elip, (0, 0, 255), 2)
+
+        cv.line(display_img, int_tup(centre_coords), int_tup(centre_star.elip[0]),
+                color=(0, 255, 0), thickness=2)
+
+        cv.line(display_img, int_tup(centre_star.elip[0]), int_tup(centre_obstruction.elip[0]),
+                color=(255, 0, 0), thickness=2)
+        fig, ax = plt.subplots(1, 1)
+        fig.suptitle('Centre star')
+        ax.imshow(display_img)
+        plt.show()
 
 
 def main():
-    on_axis = cv.imread('C:/Users/alist/OneDrive/Development/Colli-M8/on-axis-test-img.png', cv.IMREAD_GRAYSCALE)
-    analyse_on_axis(on_axis, debug_imgs=True)
+    on_axis_fits = fits.open('data/eigen/_L_SNAPSHOT_2020-03-05_21-19-14_0000_8.00s_-15.00_0.00.fits')
+    on_axis = on_axis_fits[0].data
 
-    img = fits.open("C:/NINA_images/2020-02-28_collimation/LIGHT/2020-02-29_01-36-59_Lum_-5.80_20.00s_0002.fits")
-    mat = img[0].data
-    analyse_off_axis(mat, debug_imgs=True)
+    dsi = fits.open("data/example_balanced.fit")
+    img = dsi[0].data
+
+    analyse_on_axis(img, debug_imgs=True)
+
+
+    analyse_off_axis(img, debug_imgs=True)
 
 
 
