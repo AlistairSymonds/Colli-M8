@@ -6,7 +6,8 @@ from astropy.io import fits
 from scipy import ndimage
 import matplotlib.pyplot as plt
 from anytree import Node, RenderTree, LevelOrderIter
-
+from pathlib import Path
+from skimage import exposure
 
 #from https://stackoverflow.com/questions/33964913/equivalent-of-polyfit-for-a-2d-polynomial-in-python
 def polyfit2d(x, y, z, kx=3, ky=3, order=None):
@@ -111,6 +112,17 @@ def cvhier2tree(hierarchy, contours):
 def int_tup (in_tup):
     return (int(in_tup[0]), int(in_tup[1]))
 
+
+def create_display_img(img):
+    contour_img = np.zeros((img.shape[0], img.shape[1], 1))
+    contour_img = exposure.rescale_intensity(img)
+    stretched = exposure.adjust_gamma(contour_img, gamma=0.5)
+    display_img = np.stack((stretched,) * 3, axis=-1)
+
+
+    return display_img
+
+
 def get_defocussed_stars(img, debug_imgs=False):
     binary_img = img > np.std(img) + np.median(img)
     if debug_imgs:
@@ -144,9 +156,7 @@ def get_defocussed_stars(img, debug_imgs=False):
                 print("removing node centred at " + str(node.elip[0]))
 
     if debug_imgs:
-        contour_img = np.zeros((uint8_img.shape[0], uint8_img.shape[1], 1))
-        contour_img = cv.normalize(img, contour_img, 0, 1, cv.NORM_MINMAX)
-        display_img = np.stack((contour_img,)*3, axis=-1)
+        display_img = create_display_img(img)
 
 
         for node in LevelOrderIter(tree):
@@ -164,7 +174,6 @@ def get_defocussed_stars(img, debug_imgs=False):
 
 
 def analyse_off_axis(img, debug_imgs=False):
-    img = img.astype('single')
     mat_blurred = cv.bilateralFilter(img, d=19, sigmaColor=50000, sigmaSpace=50000)
 
     histogram_img(mat_blurred)
@@ -199,7 +208,7 @@ def analyse_on_axis(img, debug_imgs=False):
     centre_coords = (img.shape[0] / 2, img.shape[1] / 2)
     current_shortest_dist = float("inf")
     for node in LevelOrderIter(tree, maxlevel=2):
-        if node is not tree and hasattr(node, 'elip'):
+        if node is not tree and hasattr(node, 'elip') and len(node.children) > 0:
             dist = cv.norm(centre_coords, node.elip[0], cv.NORM_L2)
             print("Smallest dist so far = " + str(
                 current_shortest_dist) + " current ellipse centre dist = " + str(dist))
@@ -220,14 +229,8 @@ def analyse_on_axis(img, debug_imgs=False):
                 current_shortest_dist = A
 
     if debug_imgs:
-        contour_img = np.zeros((img.shape[0], img.shape[1], 1))
-        contour_img = cv.normalize(img, contour_img, 0, 1, cv.NORM_MINMAX)
-        display_img = np.stack((contour_img,)*3, axis=-1)
+        display_img = create_display_img(img)
 
-        fig, ax = plt.subplots(1, 1)
-        fig.suptitle('Centre Star')
-        ax.imshow(contour_img)
-        plt.show()
         for node in LevelOrderIter(centre_star):
             if hasattr(node, 'elip'):
                 cv.ellipse(display_img, node.elip, (0, 0, 1), 2)
@@ -247,18 +250,20 @@ def main():
 
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("fits_path", required=True)
-    parser.add_argument('on_axis', action='store_true')
-    parser.add_argument('off_axis', action='store_true')
-    parser.add_argument('debug', action='store_true')
+    parser.add_argument("-fits_path", required=True)
+    parser.add_argument('-on_axis', action='store_true')
+    parser.add_argument('-off_axis', action='store_true')
+    parser.add_argument('-debug', action='store_true')
 
 
     args = parser.parse_args()
+    print(args)
 
+    fits_path = Path(args.fits_path)
 
-
-    fits_file = fits.open('data/eigen/_L_SNAPSHOT_2020-03-05_21-19-14_0000_8.00s_-15.00_0.00.fits')
+    fits_file = fits.open(str(fits_path))
     img = fits_file[0].data
+    img = img.astype('single')
 
     if args.on_axis:
         analyse_on_axis(img.copy(), debug_imgs=args.debug)
