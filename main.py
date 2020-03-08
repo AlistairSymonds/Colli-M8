@@ -8,80 +8,11 @@ import matplotlib.pyplot as plt
 from anytree import Node, RenderTree, LevelOrderIter
 from pathlib import Path
 from skimage import exposure
+from astropy.visualization import simple_norm
+import background_extraction as bge
 
-#from https://stackoverflow.com/questions/33964913/equivalent-of-polyfit-for-a-2d-polynomial-in-python
-def polyfit2d(x, y, z, kx=3, ky=3, order=None):
-    '''
-    Two dimensional polynomial fitting by least squares.
-    Fits the functional form f(x,y) = z.
 
-    Notes
-    -----
-    Resultant fit can be plotted with:
-    np.polynomial.polynomial.polygrid2d(x, y, soln.reshape((kx+1, ky+1)))
 
-    Parameters
-    ----------
-    x, y: array-like, 1d
-        x and y coordinates.
-    z: np.ndarray, 2d
-        Surface to fit.
-    kx, ky: int, default is 3
-        Polynomial order in x and y, respectively.
-    order: int or None, default is None
-        If None, all coefficients up to maxiumum kx, ky, ie. up to and including x^kx*y^ky, are considered.
-        If int, coefficients up to a maximum of kx+ky <= order are considered.
-
-    Returns
-    -------
-    Return paramters from np.linalg.lstsq.
-
-    soln: np.ndarray
-        Array of polynomial coefficients.
-    residuals: np.ndarray
-    rank: int
-    s: np.ndarray
-
-    '''
-
-    # grid coords
-    x, y = np.meshgrid(x, y)
-    # coefficient array, up to x^kx, y^ky
-    coeffs = np.ones((kx+1, ky+1))
-
-    # solve array
-    a = np.zeros((coeffs.size, x.size))
-
-    # for each coefficient produce array x^i, y^j
-    for index, (j, i) in enumerate(np.ndindex(coeffs.shape)):
-        # do not include powers greater than order
-        if order is not None and i + j > order:
-            arr = np.zeros_like(x)
-        else:
-            arr = coeffs[i, j] * x**i * y**j
-        a[index] = arr.flatten()
-
-    # do leastsq fitting and return leastsq result
-    return np.linalg.lstsq(a.T, np.ravel(z), rcond=None)
-
-def histogram_img(img):
-    sigma = np.std(img)
-    mean = np.mean(img)
-    print("Sigma: " + str(sigma))
-
-    neg_sigmas = (np.mean(img) - np.min(img) )/ sigma
-    pos_sigmas = (np.max(img) - np.mean(img) )/ sigma
-
-    print(neg_sigmas)
-    print(np.min(img))
-    print(pos_sigmas)
-    print(np.max(img))
-
-    low_samples = (img > (mean - sigma))
-    high_samples = (img < (mean + sigma))
-    mean_ish_img = low_samples & high_samples
-    #plt.imshow(mean_ish_img)
-    #plt.show()
 
 def cvhier2tree(hierarchy, contours):
     root = Node(name='root', parent=None)
@@ -114,16 +45,16 @@ def int_tup (in_tup):
 
 
 def create_display_img(img):
-    contour_img = np.zeros((img.shape[0], img.shape[1], 1))
-    contour_img = exposure.rescale_intensity(img)
-    stretched = exposure.adjust_gamma(contour_img, gamma=0.5)
-    display_img = np.stack((stretched,) * 3, axis=-1)
+    norm = simple_norm(img,'sqrt')
+
+    display_img = np.stack((norm(img),) * 3, axis=-1)
 
 
     return display_img
 
 
 def get_defocussed_stars(img, debug_imgs=False):
+
     binary_img = img > np.std(img) + np.median(img)
     if debug_imgs:
         plt.imshow(binary_img)
@@ -170,24 +101,64 @@ def get_defocussed_stars(img, debug_imgs=False):
 
     return tree
 
+def cart2pol(x, y):
+    rho = np.sqrt(x**2 + y**2)
+    phi = np.arctan2(y, x)
+    return(rho, phi)
 
+def pol2cart(rho, phi):
+    x = rho * np.cos(phi)
+    y = rho * np.sin(phi)
+    return(x, y)
+
+def line_points_from_elip_axis(elip):
+    centre = elip[0]
+    axis = [1]
+    angle = elip[2]
+
+    p = pol2cart(4, angle)
+
+    return (int_tup(centre), int_tup(p))
 
 
 def analyse_off_axis(img, debug_imgs=False):
     mat_blurred = cv.bilateralFilter(img, d=19, sigmaColor=50000, sigmaSpace=50000)
 
-    histogram_img(mat_blurred)
+    bounds = bge.gen_sample_pts(img,1,0)
+    print(bounds)
+    bg_samples = (bounds[0] < img) & (img < bounds[1])
+    num_samples = np.sum(bg_samples)
+    print("Got " + str(num_samples) + " out of " + str(len(bg_samples)) + "(" + str(num_samples/len(bg_samples)) +"%)")
+    plt.imshow(bg_samples)
+    plt.show()
+    x_sample_coords = []
+    y_sample_coords = []
+    samples = []
+    for i in range(img.shape[0]):
+        for j in range(img.shape[1]):
+            if bounds[0] < img[i,j] and img[i,j] < bounds[1]:
+                x_sample_coords.append(i)
+                y_sample_coords.append(j)
+                samples.append(img[i,j])
+
+    kx = 2
+    ky = 2
+    bg = bge.polyfit2d(x_sample_coords, y_sample_coords, samples, kx=kx, ky=ky)
+    coeffs = bg[0].reshape((kx + 1, ky + 1))
     x = np.arange(img.shape[0])
     y = np.arange(img.shape[1])
-    kx = 1
-    ky = 1
-    bg = polyfit2d(x, y, mat_blurred, kx=kx, ky=ky)
-    coeffs = bg[0].reshape((kx + 1, ky + 1))
     fitted_surf = np.polynomial.polynomial.polygrid2d(x, y, coeffs)
 
     mat_corrected = mat_blurred - fitted_surf
 
     stars_tree = get_defocussed_stars(img, debug_imgs=debug_imgs)
+    final_img = create_display_img(img)
+    for node in LevelOrderIter(stars_tree, maxlevel=2):
+        if node is not stars_tree and hasattr(node, 'elip') and len(node.children) > 0:
+            line_pts = line_points_from_elip_axis(node.elip)
+            cv.line(final_img, line_pts[0], line_pts[1],color=(0,1,0))
+
+
 
     if debug_imgs:
         fig, ax = plt.subplots(2, 2)
