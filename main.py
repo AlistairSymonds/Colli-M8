@@ -10,9 +10,9 @@ from pathlib import Path
 from skimage import exposure
 from astropy.visualization import simple_norm
 import background_extraction as bge
-
-
-
+from astropy.modeling import models, fitting
+import warnings
+import astropy.stats
 
 def cvhier2tree(hierarchy, contours):
     root = Node(name='root', parent=None)
@@ -55,15 +55,51 @@ def create_display_img(img):
 
 def get_defocussed_stars(img, debug_imgs=False):
 
-    binary_img = img > np.std(img) + np.median(img)
+
+
+
+
+    print("making grid")
+    y, x = np.mgrid[:img.shape[0], :img.shape[1]]
+
+    # Fit the data using astropy.modeling
+    p_init = models.Polynomial2D(degree=2)
+    fit_lsq = fitting.LinearLSQFitter()
+    fit_sigma = fitting.FittingWithOutlierRemoval(fit_lsq, astropy.stats.sigma_clip, niter=3,
+                                                  sigma=3.0)
+    with warnings.catch_warnings():
+        # Ignore model linearity warning from the fitter
+        warnings.simplefilter('ignore')
+        print("Fitting")
+        p, mask = fit_sigma(p_init, x, y, img)
+    bg = p(x, y)
+
+    if debug_imgs:
+        # Plot the data with the best-fit model
+        plt.figure(figsize=(8, 2.5))
+        plt.subplot(1, 3, 1)
+        plt.imshow(img, origin='lower', interpolation='nearest')
+        plt.title("Data")
+        plt.subplot(1, 3, 2)
+        plt.imshow(bg, origin='lower', interpolation='nearest')
+        plt.title("Model")
+        plt.subplot(1, 3, 3)
+        plt.imshow(img - bg, origin='lower', interpolation='nearest')
+        plt.title("Residual")
+        plt.show()
+
+    corrected = (img - bg).astype(np.single)
+    filtered = cv.bilateralFilter(corrected, d=19, sigmaColor=10000, sigmaSpace=10000)
+
+    binary_img = filtered > 3 * np.std(filtered) + np.median(filtered)
     if debug_imgs:
         plt.imshow(binary_img)
         plt.show()
     uint8_img = (binary_img * 1).astype(np.uint8)
 
-    im2, contours, hierarchy = cv.findContours(uint8_img, cv.RETR_TREE, cv.CHAIN_APPROX_TC89_L1)
+    im2, contours, hierarchy = cv.findContours(uint8_img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
 
-
+    #now its time to get from pixels to contours
     tree = cvhier2tree(hierarchy,contours)
 
     #we only care about nodes we can fit an ellipse to so, so remove the ones we can't
@@ -89,6 +125,7 @@ def get_defocussed_stars(img, debug_imgs=False):
     if debug_imgs:
         display_img = create_display_img(img)
 
+        cv.drawContours(display_img, contours, -1, (0, 1, 0), 3)
 
         for node in LevelOrderIter(tree):
             if node is not tree and hasattr(node,'elip'):
@@ -121,38 +158,11 @@ def line_points_from_elip_axis(elip):
     return (int_tup(centre), int_tup(p))
 
 
-def analyse_off_axis(img, debug_imgs=False):
-    mat_blurred = cv.bilateralFilter(img, d=19, sigmaColor=50000, sigmaSpace=50000)
+def analyse_off_axis(img, stars_tree, debug_imgs=False):
 
-    bounds = bge.gen_sample_pts(img,1,0)
-    print(bounds)
-    bg_samples = (bounds[0] < img) & (img < bounds[1])
-    num_samples = np.sum(bg_samples)
-    print("Got " + str(num_samples) + " out of " + str(len(bg_samples)) + "(" + str(num_samples/len(bg_samples)) +"%)")
-    plt.imshow(bg_samples)
-    plt.show()
-    x_sample_coords = []
-    y_sample_coords = []
-    samples = []
-    for i in range(img.shape[0]):
-        for j in range(img.shape[1]):
-            if bounds[0] < img[i,j] and img[i,j] < bounds[1]:
-                x_sample_coords.append(i)
-                y_sample_coords.append(j)
-                samples.append(img[i,j])
 
-    kx = 2
-    ky = 2
-    bg = bge.polyfit2d(x_sample_coords, y_sample_coords, samples, kx=kx, ky=ky)
-    coeffs = bg[0].reshape((kx + 1, ky + 1))
-    x = np.arange(img.shape[0])
-    y = np.arange(img.shape[1])
-    fitted_surf = np.polynomial.polynomial.polygrid2d(x, y, coeffs)
-
-    mat_corrected = mat_blurred - fitted_surf
-
-    stars_tree = get_defocussed_stars(img, debug_imgs=debug_imgs)
     final_img = create_display_img(img)
+
     for node in LevelOrderIter(stars_tree, maxlevel=2):
         if node is not stars_tree and hasattr(node, 'elip') and len(node.children) > 0:
             line_pts = line_points_from_elip_axis(node.elip)
@@ -160,26 +170,18 @@ def analyse_off_axis(img, debug_imgs=False):
 
 
 
-    if debug_imgs:
-        fig, ax = plt.subplots(2, 2)
-        fig.suptitle('Background extraction')
-        ax[0, 0].imshow(img)
-        ax[0, 1].imshow(mat_blurred)
-        ax[1, 0].imshow(fitted_surf)
-        ax[1, 1].imshow(mat_corrected)
-        plt.show()
 
 
 
-def analyse_on_axis(img, debug_imgs=False):
-    tree = get_defocussed_stars(img, debug_imgs=debug_imgs)
+
+def analyse_on_axis(img, stars_tree, debug_imgs=False):
 
     # now find ellipse with its centre closest to the centre of the image
     centre_star = None
-    centre_coords = (img.shape[0] / 2, img.shape[1] / 2)
+    centre_coords = (img.shape[1] / 2, img.shape[0] / 2) # we want an xy point from shape which is yx
     current_shortest_dist = float("inf")
-    for node in LevelOrderIter(tree, maxlevel=2):
-        if node is not tree and hasattr(node, 'elip') and len(node.children) > 0:
+    for node in LevelOrderIter(stars_tree, maxlevel=2):
+        if node is not stars_tree and hasattr(node, 'elip') and len(node.children) > 0:
             dist = cv.norm(centre_coords, node.elip[0], cv.NORM_L2)
             print("Smallest dist so far = " + str(
                 current_shortest_dist) + " current ellipse centre dist = " + str(dist))
@@ -219,7 +221,6 @@ def analyse_on_axis(img, debug_imgs=False):
 
 def main():
 
-
     parser = argparse.ArgumentParser()
     parser.add_argument("-fits_path", required=True)
     parser.add_argument('-on_axis', action='store_true')
@@ -236,11 +237,13 @@ def main():
     img = fits_file[0].data
     img = img.astype('single')
 
+    stars = get_defocussed_stars(img, True)
+
     if args.on_axis:
-        analyse_on_axis(img.copy(), debug_imgs=args.debug)
+        analyse_on_axis(img.copy(), stars, debug_imgs=args.debug)
 
     if args.off_axis:
-        analyse_off_axis(img.copy(), debug_imgs=args.debug)
+        analyse_off_axis(img.copy(), stars, debug_imgs=args.debug)
 
 
 
