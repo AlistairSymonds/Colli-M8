@@ -32,7 +32,7 @@ def cvhier2tree(hierarchy, contours):
             if cnt_nodes[H[i][3]] != None:
                 node_i = Node(str(i), parent=cnt_nodes[H[i][3]], cnt=contours[i])
                 cnt_nodes[i] = node_i
-            else: #turns out this path may not get hit due to the way opencv orders their list?
+            else: #turns out this path may never get hit due to the way opencv orders their list?
                 node_i = Node(str(i), parent=cnt_nodes[H[i][3]])
 
 
@@ -148,12 +148,11 @@ def pol2cart(rho, phi):
     y = rho * np.sin(phi)
     return(x, y)
 
-def line_points_from_elip_axis(elip):
+def line_points_from_elip_axis(elip, length):
     centre = elip[0]
-    axis = [1]
     angle = elip[2]
-
-    p = pol2cart(100, np.radians(angle))
+    print(length)
+    p = pol2cart(length, np.radians(angle))
 
     return (int_tup(centre), int_tup((p[0] + centre[0], p[1] + centre[1])))
 
@@ -165,7 +164,11 @@ def analyse_off_axis(img, stars_tree, debug_imgs=False):
 
     for node in LevelOrderIter(stars_tree, maxlevel=2):
         if node is not stars_tree and hasattr(node, 'elip'):
-            line_pts = line_points_from_elip_axis(node.elip)
+            axes = node.elip[1]
+            minor, major = axes
+            ecc = np.sqrt(1- ( (minor**2)/ (major**2) ))
+            print(ecc)
+            line_pts = line_points_from_elip_axis(node.elip, length=200*ecc)
             print("Drawing pointer: " + str(line_pts))
             cv.line(final_img, line_pts[0], line_pts[1],color=(0,1,0), thickness=2)
 
