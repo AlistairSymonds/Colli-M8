@@ -153,9 +153,9 @@ def line_points_from_elip_axis(elip):
     axis = [1]
     angle = elip[2]
 
-    p = pol2cart(4, angle)
+    p = pol2cart(100, np.radians(angle))
 
-    return (int_tup(centre), int_tup(p))
+    return (int_tup(centre), int_tup((p[0] + centre[0], p[1] + centre[1])))
 
 
 def analyse_off_axis(img, stars_tree, debug_imgs=False):
@@ -164,11 +164,13 @@ def analyse_off_axis(img, stars_tree, debug_imgs=False):
     final_img = create_display_img(img)
 
     for node in LevelOrderIter(stars_tree, maxlevel=2):
-        if node is not stars_tree and hasattr(node, 'elip') and len(node.children) > 0:
+        if node is not stars_tree and hasattr(node, 'elip'):
             line_pts = line_points_from_elip_axis(node.elip)
-            cv.line(final_img, line_pts[0], line_pts[1],color=(0,1,0))
+            print("Drawing pointer: " + str(line_pts))
+            cv.line(final_img, line_pts[0], line_pts[1],color=(0,1,0), thickness=2)
 
-
+    plt.imshow(final_img)
+    plt.show()
 
 
 
